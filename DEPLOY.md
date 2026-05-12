@@ -1,64 +1,70 @@
-# 部署到 Vercel（带真实 LLM）
+# 部署到 Vercel
 
-## 1. 本地准备
+## 一、配置环境变量
+
+无论本地还是 Vercel，都需要这 3 个变量：
+
+| Key | 说明 | 示例 |
+|---|---|---|
+| `LLM_API_KEY` | 你在供应商后台申请的 API Key | `sk-xxx` / `eyJ...` |
+| `LLM_BASE_URL` | OpenAI 兼容 base URL | `https://api.minimaxi.com/v1` |
+| `LLM_MODEL` | 模型名 | `MiniMax-Text-01` |
+
+### 各家 Provider 速查
+
+| Provider | LLM_BASE_URL | LLM_MODEL 示例 | Key 申请 |
+|---|---|---|---|
+| **MiniMax** | `https://api.minimaxi.com/v1` | `MiniMax-Text-01` / `abab6.5s-chat` | https://platform.minimaxi.com/ |
+| **DeepSeek** | `https://api.deepseek.com/v1` | `deepseek-chat` / `deepseek-reasoner` | https://platform.deepseek.com/ |
+| **智谱 GLM** | `https://open.bigmodel.cn/api/paas/v4` | `glm-4-flash`（免费）/ `glm-4-plus` | https://bigmodel.cn/ |
+| **通义千问** | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `qwen-plus` / `qwen-turbo` | https://dashscope.aliyun.com/ |
+| **Moonshot** | `https://api.moonshot.cn/v1` | `moonshot-v1-32k` | https://platform.moonshot.cn/ |
+| **OpenRouter** | `https://openrouter.ai/api/v1` | `anthropic/claude-sonnet-4` 等 | https://openrouter.ai/ |
+| **OpenAI** | `https://api.openai.com/v1` | `gpt-4o-mini` | https://platform.openai.com/ |
+
+> 切换 Provider：**只改这 3 个环境变量**，代码一行不动。
+
+## 二、本地调试
 
 ```bash
-npm install
 cp .env.example .env.local
-# 编辑 .env.local，填入你的 ANTHROPIC_API_KEY
+# 编辑 .env.local 填入你的 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL
+npm install
 npm run dev
 ```
 
-打开 http://localhost:3000 验证：
-- 首页表单提交后能进入工作台并看到真实 LLM 生成的四层拆解
-- 卡片"和 AI 讨论"打开侧栏，发送消息能看到流式回复
+打开 http://localhost:3000，提交表单看真实生成。
 
-如果想先不接 LLM 跑通界面：在 `.env.local` 里设 `NEXT_PUBLIC_USE_REAL_LLM=false`，会自动走本地 mock。
+如果想先不接 LLM 跑通界面：在 `.env.local` 里设 `NEXT_PUBLIC_USE_REAL_LLM=false`，全部走本地 mock。
 
-## 2. 推送到 GitHub
+## 三、Vercel 部署
 
-```bash
-git init
-git add .
-git commit -m "init: ai transformation canvas with real LLM"
-git branch -M main
-git remote add origin https://github.com/<你>/ai-transformation-canvas.git
-git push -u origin main
-```
+1. 访问 https://vercel.com/new → 选你的 GitHub 仓库 → **Import**
+2. Framework Preset：**Next.js**（自动识别），不用改
+3. **Environment Variables** 加上面 3 条（Production / Preview / Development 全勾）
+4. 点 **Deploy**，等 1-2 分钟
 
-## 3. Vercel 导入
+之后每次 `git push origin main` 自动重新部署。
 
-1. 访问 https://vercel.com/new → 选择 GitHub 仓库 → Import
-2. Framework Preset：**Next.js**（自动识别），无需改任何字段
-3. **Environment Variables** 添加：
+## 四、想换 Provider 怎么办？
 
-   | Key | Value | Environment |
-   |---|---|---|
-   | `ANTHROPIC_API_KEY` | `sk-ant-...` | Production / Preview / Development 全勾 |
+- **本地**：改 `.env.local` 里的 3 个变量 → 重启 `npm run dev`
+- **Vercel**：Project → Settings → Environment Variables → 改完 → Deployments → 最新一条点 "Redeploy"
 
-4. 点 **Deploy**，1-2 分钟拿到 `xxx.vercel.app`
+代码完全不用动。
 
-## 4. 关键文件
+## 五、关键文件
 
 | 文件 | 作用 |
 |---|---|
-| [app/api/generate/route.ts](app/api/generate/route.ts) | 服务端：调 Claude 生成四层拆解 JSON |
-| [app/api/chat/route.ts](app/api/chat/route.ts) | 服务端：模块对话，流式返回纯文本 |
+| [lib/llm.ts](lib/llm.ts) | LLM 适配层，读环境变量返回 OpenAI client |
+| [app/api/generate/route.ts](app/api/generate/route.ts) | 生成四层拆解 JSON |
+| [app/api/chat/route.ts](app/api/chat/route.ts) | 模块对话流式接口 |
 | [lib/prompts.ts](lib/prompts.ts) | 系统提示词与 JSON Schema 约束 |
-| [lib/mock-api.ts](lib/mock-api.ts) | 前端调用层：真实 API 失败自动回退 mock |
+| [lib/mock-api.ts](lib/mock-api.ts) | 前端调用层，真实 API 失败自动回退 mock |
 
-## 5. 模型与成本
+## 六、安全
 
-- 默认模型：`claude-opus-4-7`，自适应思考 + `effort: high`
-- 系统提示词使用 `cache_control: ephemeral`，重复生成同类模板时显著降本
-- `app/api/generate` `maxDuration = 60s`（Vercel 默认上限，Hobby 计划够用）
-
-如要降本，把 `route.ts` 里的 model 改成 `claude-sonnet-4-6`，effort 调成 `medium`。
-
-## 6. 安全提醒
-
-- `ANTHROPIC_API_KEY` **不要**加 `NEXT_PUBLIC_` 前缀，否则会被打包进前端 bundle
-- 真实生产环境建议加：
-  - 速率限制（Vercel KV / Upstash Ratelimit）
-  - 请求体校验（Zod）
-  - 用户鉴权（Clerk / NextAuth）
+- `LLM_API_KEY` **不要**加 `NEXT_PUBLIC_` 前缀，否则会被打包进前端 bundle 暴露给所有人
+- 路由都标了 `export const runtime = "nodejs"`，确保 Key 只在服务端可见
+- 真实生产建议加：速率限制（Vercel KV / Upstash）、请求体校验、用户鉴权

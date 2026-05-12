@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import Anthropic from "@anthropic-ai/sdk";
 import { GenerateAnalysisInput, Layer, LayerName, Project } from "@/lib/types";
 import { SYSTEM_GENERATE, buildGenerateUserPrompt } from "@/lib/prompts";
+import { getLLMClient, getModelName } from "@/lib/llm";
 import { uid } from "@/lib/utils";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
-
-const client = new Anthropic();
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,25 +14,23 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "industry & scenario are required" }, { status: 400 });
     }
 
-    // Use streaming because max_tokens is high (~16K) — required by SDK to avoid timeouts.
-    // Prompt-cache the system block so repeated generations on the same template share prefix.
-    const stream = client.messages.stream({
-      model: "claude-opus-4-7",
-      max_tokens: 16000,
-      thinking: { type: "adaptive" } as any,
-      output_config: { effort: "high" } as any,
-      system: [
-        { type: "text", text: SYSTEM_GENERATE, cache_control: { type: "ephemeral" } },
+    const client = getLLMClient();
+    const model = getModelName();
+
+    // OpenAI 兼容协议：MiniMax / DeepSeek / GLM / Qwen 等都走这一条路径
+    const completion = await client.chat.completions.create({
+      model,
+      temperature: 0.7,
+      max_tokens: 8000,
+      // DeepSeek / 多数兼容供应商支持 json_object；不支持的也会忽略此字段
+      response_format: { type: "json_object" } as any,
+      messages: [
+        { role: "system", content: SYSTEM_GENERATE },
+        { role: "user", content: buildGenerateUserPrompt(input) },
       ],
-      messages: [{ role: "user", content: buildGenerateUserPrompt(input) }],
-    } as any);
+    });
 
-    const message = await stream.finalMessage();
-    const text = message.content
-      .filter((b): b is Anthropic.TextBlock => b.type === "text")
-      .map((b) => b.text)
-      .join("");
-
+    const text = completion.choices?.[0]?.message?.content || "";
     const parsed = safeParseJson(text);
     if (!parsed?.layers || !Array.isArray(parsed.layers)) {
       return NextResponse.json(
@@ -63,23 +59,18 @@ export async function POST(req: NextRequest) {
     console.error("[/api/generate]", err);
     const status = err?.status ?? 500;
     return NextResponse.json(
-      { error: err?.message ?? "Internal error", type: err?.type },
+      { error: err?.message ?? "Internal error" },
       { status },
     );
   }
 }
 
 function safeParseJson(text: string): any | null {
-  // Strip code fences just in case the model added them.
   const cleaned = text.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-  try {
-    return JSON.parse(cleaned);
-  } catch {
-    // Fallback: extract the first {...} block.
-    const m = cleaned.match(/\{[\s\S]*\}/);
-    if (!m) return null;
-    try { return JSON.parse(m[0]); } catch { return null; }
-  }
+  try { return JSON.parse(cleaned); } catch {}
+  const m = cleaned.match(/\{[\s\S]*\}/);
+  if (!m) return null;
+  try { return JSON.parse(m[0]); } catch { return null; }
 }
 
 function normalizeLayers(raw: any[]): Layer[] {
