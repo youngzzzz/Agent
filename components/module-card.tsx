@@ -26,7 +26,7 @@ export function ModuleCard({ module, primaryActions, onDiscuss, onDetail }: Prop
         </div>
       )}
       <ul className="mb-4 space-y-1.5 text-[13px] text-ink-700">
-        {module.bullets.slice(0, 4).map((b, i) => (
+        {(module.bullets || []).slice(0, 4).map((b, i) => (
           <li key={i} className="flex gap-2">
             <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-ink-300" />
             <span>{b}</span>

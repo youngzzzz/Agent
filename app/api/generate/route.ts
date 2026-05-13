@@ -1,97 +1,132 @@
 import { NextRequest, NextResponse } from "next/server";
-import { GenerateAnalysisInput, Layer, LayerName, Project } from "@/lib/types";
-import { SYSTEM_GENERATE, buildGenerateUserPrompt } from "@/lib/prompts";
-import { getLLMClient, getModelName } from "@/lib/llm";
-import { uid } from "@/lib/utils";
+import { chatCompletion } from "@/lib/llm";
+import { buildProject } from "@/lib/mock-data";
+import { GenerateAnalysisInput } from "@/lib/types";
 
-export const runtime = "nodejs";
-export const maxDuration = 60;
+const SYSTEM_PROMPT = `你是 AI 转型咨询专家，擅长将任意行业场景拆解为一套可落地的 AI 产品方案。
+请严格按照四层结构输出：业务层(business)、AI应用层(ai)、产品层(product)、交付层(delivery)。
+每个模块需要包含：标题、摘要、要点、详情、可落地产物、风险、建议提示词。
+返回合法的 JSON 对象，结构如下：
+{
+  "id": "项目ID",
+  "name": "项目名称",
+  "industry": "行业",
+  "scenario": "场景",
+  "targetUser": "目标用户",
+  "painPoints": "痛点",
+  "outputPurpose": "输出目的",
+  "depth": "深度",
+  "createdAt": "ISO时间",
+  "updatedAt": "ISO时间",
+  "status": "generated",
+  "layers": [
+    {
+      "id": "business",
+      "name": "business",
+      "title": "业务层",
+      "description": "业务层定义",
+      "modules": []
+    },
+    {
+      "id": "ai",
+      "name": "ai",
+      "title": "AI应用层",
+      "description": "AI应用层定义",
+      "modules": []
+    },
+    {
+      "id": "product",
+      "name": "product",
+      "title": "产品层",
+      "description": "产品层定义",
+      "modules": []
+    },
+    {
+      "id": "delivery",
+      "name": "delivery",
+      "title": "交付层",
+      "description": "交付层定义",
+      "modules": []
+    }
+  ]
+}`;
 
 export async function POST(req: NextRequest) {
   try {
-    const input = (await req.json()) as GenerateAnalysisInput;
-    if (!input?.industry || !input?.scenario) {
-      return NextResponse.json({ error: "industry & scenario are required" }, { status: 400 });
-    }
+    const input: GenerateAnalysisInput = await req.json();
+    const userPrompt = `行业：${input.industry}
+场景：${input.scenario}
+${input.targetUser ? `目标用户：${input.targetUser}` : ""}
+${input.painPoints ? `痛点：${input.painPoints}` : ""}
+输出目的：${input.outputPurpose}
+深度：${input.depth}`;
 
-    const client = getLLMClient();
-    const model = getModelName();
-
-    // OpenAI 兼容协议：MiniMax / DeepSeek / GLM / Qwen 等都走这一条路径
-    const completion = await client.chat.completions.create({
-      model,
-      temperature: 0.7,
-      max_tokens: 8000,
-      // DeepSeek / 多数兼容供应商支持 json_object；不支持的也会忽略此字段
-      response_format: { type: "json_object" } as any,
-      messages: [
-        { role: "system", content: SYSTEM_GENERATE },
-        { role: "user", content: buildGenerateUserPrompt(input) },
+    const text = await chatCompletion(
+      [
+        { role: "system", content: SYSTEM_PROMPT },
+        { role: "user", content: userPrompt },
       ],
-    });
+      { response_format: { type: "json_object" } },
+    );
 
-    const text = completion.choices?.[0]?.message?.content || "";
-    const parsed = safeParseJson(text);
-    if (!parsed?.layers || !Array.isArray(parsed.layers)) {
-      return NextResponse.json(
-        { error: "LLM returned invalid JSON", raw: text.slice(0, 800) },
-        { status: 502 },
-      );
+    let project;
+    // 去除所有 markdown code fence（可能有嵌套）
+    let stripped = text.replace(/```json\s*|```\s*/gi, "").trim();
+    try {
+      project = JSON.parse(stripped);
+    } catch {
+      console.warn("[generate] invalid JSON after strip, fallback to mock", {
+        textPreview: stripped.slice(0, 500),
+        textLen: stripped.length,
+      });
+      return NextResponse.json(buildProject(input));
     }
 
-    const project: Project = {
-      id: uid("prj"),
-      name: `${input.industry}｜${input.scenario}`,
-      industry: input.industry,
-      scenario: input.scenario,
-      targetUser: input.targetUser,
-      painPoints: input.painPoints,
-      outputPurpose: input.outputPurpose,
-      depth: input.depth,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      status: "generated",
-      layers: normalizeLayers(parsed.layers),
-    };
+    if (!project.layers || !Array.isArray(project.layers)) {
+      console.warn("[generate] invalid structure, fallback to mock", {
+        hasLayers: !!project.layers,
+        isArray: Array.isArray(project.layers),
+      });
+      return NextResponse.json(buildProject(input));
+    }
+
+    // 规范化模块字段（兼容中文字段名）
+    for (const layer of project.layers) {
+      if (layer.modules) {
+        for (const mod of layer.modules) {
+          if (!mod.id) mod.id = `mod_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+          if (!mod.layerId) mod.layerId = layer.id;
+          // 先做字段映射，再确保 bullets 是数组
+          if (mod.摘要 && !mod.summary) mod.summary = mod.摘要;
+          if (mod.keyPoints && !mod.bullets) mod.bullets = mod.keyPoints;
+          if (mod.points && !mod.bullets) mod.bullets = mod.points;
+          if (mod.要点 && !mod.bullets) mod.bullets = mod.要点;
+          if (mod.详情 && !mod.detail) mod.detail = mod.详情;
+          if (mod.details && !mod.detail) mod.detail = mod.details;
+          if (mod.可落地产物 && !mod.deliverables) mod.deliverables = mod.可落地产物;
+          if (mod.风险 && !mod.risks) mod.risks = mod.风险;
+          if (mod.建议提示词 && !mod.suggestedPrompts) mod.suggestedPrompts = mod.建议提示词;
+          if (mod.标签 && !mod.tags) mod.tags = mod.标签;
+          // 确保 bullets 是数组
+          if (!mod.bullets || !Array.isArray(mod.bullets)) mod.bullets = [];
+          if (!mod.deliverables || !Array.isArray(mod.deliverables)) mod.deliverables = [];
+          if (!mod.risks || !Array.isArray(mod.risks)) mod.risks = [];
+          if (!mod.suggestedPrompts || !Array.isArray(mod.suggestedPrompts)) mod.suggestedPrompts = [];
+        }
+      }
+    }
+
+    project.id = project.id || `proj_${Date.now()}`;
+    project.createdAt = project.createdAt || new Date().toISOString();
+    project.updatedAt = project.updatedAt || new Date().toISOString();
+    project.status = "generated";
 
     return NextResponse.json(project);
   } catch (err: any) {
-    console.error("[/api/generate]", err);
-    const status = err?.status ?? 500;
+    console.error("[generate] error:", err);
     return NextResponse.json(
-      { error: err?.message ?? "Internal error" },
-      { status },
+      { error: err?.message || "生成失败" },
+      { status: 500 },
     );
   }
-}
-
-function safeParseJson(text: string): any | null {
-  const cleaned = text.trim().replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
-  try { return JSON.parse(cleaned); } catch {}
-  const m = cleaned.match(/\{[\s\S]*\}/);
-  if (!m) return null;
-  try { return JSON.parse(m[0]); } catch { return null; }
-}
-
-function normalizeLayers(raw: any[]): Layer[] {
-  return raw.map((l) => ({
-    id: l.id as LayerName,
-    name: l.id as LayerName,
-    title: String(l.title ?? ""),
-    description: String(l.description ?? ""),
-    modules: (l.modules ?? []).map((m: any) => ({
-      id: uid("mod"),
-      layerId: l.id as LayerName,
-      title: String(m.title ?? ""),
-      summary: String(m.summary ?? ""),
-      tags: Array.isArray(m.tags) ? m.tags.map(String) : undefined,
-      bullets: Array.isArray(m.bullets) ? m.bullets.map(String) : [],
-      detail: String(m.detail ?? ""),
-      deliverables: Array.isArray(m.deliverables) ? m.deliverables.map(String) : [],
-      risks: Array.isArray(m.risks) ? m.risks.map(String) : [],
-      suggestedPrompts: Array.isArray(m.suggestedPrompts)
-        ? m.suggestedPrompts.map(String)
-        : ["继续展开", "生成 PRD", "和 AI 讨论"],
-    })),
-  }));
 }

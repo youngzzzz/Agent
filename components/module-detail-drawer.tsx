@@ -43,7 +43,7 @@ export function ModuleDetailDrawer({ open, module, onClose, onDiscuss, onGenerat
               <p className="text-sm leading-relaxed text-ink-700">{module.summary}</p>
               {module.tags && module.tags.length > 0 && (
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {module.tags.map((t) => <Badge key={t} tone="brand">{t}</Badge>)}
+                  {(module.tags || []).map((t) => <Badge key={t} tone="brand">{t}</Badge>)}
                 </div>
               )}
             </Block>
@@ -56,7 +56,7 @@ export function ModuleDetailDrawer({ open, module, onClose, onDiscuss, onGenerat
 
             <Block title="关键判断">
               <ul className="space-y-1.5 text-[13px] text-ink-700">
-                {module.bullets.map((b, i) => (
+                {module.bullets && (module.bullets || []).map((b, i) => (
                   <li key={i} className="flex gap-2">
                     <span className="mt-1.5 h-1 w-1 shrink-0 rounded-full bg-brand" />
                     <span>{b}</span>
@@ -67,19 +67,19 @@ export function ModuleDetailDrawer({ open, module, onClose, onDiscuss, onGenerat
 
             <Block title="可落地产物" icon={<ListChecks className="h-4 w-4 text-brand" />}>
               <ul className="space-y-1.5 text-[13px] text-ink-700">
-                {module.deliverables.map((d, i) => <li key={i}>· {d}</li>)}
+                {(module.deliverables || []).map((d, i) => <li key={i}>· {d}</li>)}
               </ul>
             </Block>
 
             <Block title="风险提示">
               <ul className="space-y-1.5 text-[13px] text-rose-700">
-                {module.risks.map((d, i) => <li key={i}>· {d}</li>)}
+                {(module.risks || []).map((d, i) => <li key={i}>· {d}</li>)}
               </ul>
             </Block>
 
             <Block title="相关下一步">
               <div className="flex flex-wrap gap-1.5">
-                {module.suggestedPrompts.map((p) => (
+                {(module.suggestedPrompts || []).map((p) => (
                   <Badge key={p} tone="default">{p}</Badge>
                 ))}
               </div>

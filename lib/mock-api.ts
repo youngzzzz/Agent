@@ -83,13 +83,33 @@ export async function chatStream(
   }
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
+  let buffer = "";
   let full = "";
+
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
-    const chunk = decoder.decode(value, { stream: true });
-    full += chunk;
-    onDelta(chunk);
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE：每条事件以 "data: ...\n\n" 分隔
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (payload === "[DONE]") return full;
+      try {
+        const json: any = JSON.parse(payload);
+        const delta = json?.delta;
+        if (delta) {
+          full += delta;
+          onDelta(delta);
+        }
+      } catch {
+        // 忽略解析失败的心跳/空行
+      }
+    }
   }
   return full;
 }
@@ -106,7 +126,7 @@ async function chatStreamToString(
 
 /* -------------------------- Mock 回退 -------------------------- */
 
-function mockReply(messages: ChatMessage[], project: Project, m?: ModuleItem): ChatMessage {
+export function mockReply(messages: ChatMessage[], project: Project, m?: ModuleItem): ChatMessage {
   const last = messages[messages.length - 1];
   const head = m
     ? `**${project.name} → ${m.title}**\n\n基于「${last?.content || "继续展开"}」：\n`
