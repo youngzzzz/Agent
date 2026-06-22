@@ -5,29 +5,23 @@
  *   LLM_API_KEY      必填
  *   LLM_BASE_URL     必填，到 /v1 为止（不含末尾斜杠）
  *   LLM_MODEL        必填
- *   LLM_PATH         可选，默认 /chat/completions；MiniMax 用 /text/chatcompletion_v2
+ *   LLM_PATH         可选，默认 /chat/completions；MiniMax Anthropic 用 /v1/messages
  *
  * Provider 速查：
  *   ┌───────────┬────────────────────────────────────────────┬──────────────────────────┬──────────────────────────────┐
  *   │ Provider  │ LLM_BASE_URL                               │ LLM_PATH                 │ LLM_MODEL                    │
  *   ├───────────┼────────────────────────────────────────────┼──────────────────────────┼──────────────────────────────┤
- *   │ MiniMax   │ https://api.minimax.chat/v1                │ /text/chatcompletion_v2  │ minimax-M2.7 (codingplan)  │
- *   │ DeepSeek  │ https://api.deepseek.com/v1                │ /chat/completions (默认) │ deepseek-v4                  │
- *   │ 智谱 GLM  │ https://open.bigmodel.cn/api/paas/v4       │ /chat/completions (默认) │ glm-4.5-air                  │
- *   │ 通义千问  │ https://dashscope.aliyuncs.com/compatible-mode/v1 │ /chat/completions │ qwen-plus                    │
- *   │ Moonshot  │ https://api.moonshot.cn/v1                 │ /chat/completions (默认) │ moonshot-v1-32k              │
- *   │ OpenAI    │ https://api.openai.com/v1                  │ /chat/completions (默认) │ gpt-4o-mini                  │
+ *   │ MiniMax   │ https://api.minimaxi.com/v1               │ /chat/completions        │ minimax-M2.7                │
+ *   │ MiniMax   │ https://api.minimaxi.com/anthropic        │ /v1/messages (Anthropic) │ minimax-M2.7                │
+ *   │ DeepSeek  │ https://api.deepseek.com/v1               │ /chat/completions        │ deepseek-v4-flash           │
+ *   │ 智谱 GLM  │ https://open.bigmodel.cn/api/paas/v4      │ /chat/completions        │ glm-4-flash                 │
+ *   │ 通义千问  │ https://dashscope.aliyuncs.com/compatible-mode/v1 │ /chat/completions │ qwen-plus                   │
+ *   │ Moonshot  │ https://api.moonshot.cn/v1                │ /chat/completions        │ moonshot-v1-32k             │
+ *   │ OpenAI    │ https://api.openai.com/v1                │ /chat/completions        │ gpt-4o-mini                 │
  *   └───────────┴────────────────────────────────────────────┴──────────────────────────┴──────────────────────────────┘
  */
 
-import { Agent, fetch as undiciFetch } from "undici";
-
-// 调大 headers/body 超时到 15 分钟，兼容 reasoning 模型长时间不返回首字节的情况
-const llmDispatcher = new Agent({
-  headersTimeout: 15 * 60 * 1000,
-  bodyTimeout: 15 * 60 * 1000,
-  connectTimeout: 60 * 1000,
-});
+const LLM_FETCH_TIMEOUT_MS = 15 * 60 * 1000;
 
 interface LLMConfig {
   apiKey: string;
@@ -51,6 +45,16 @@ function getConfig(): LLMConfig {
   };
 }
 
+/** DeepSeek 思考模式配置（从环境变量读取） */
+function getDeepSeekThinkingConfig(): { enabled: boolean; effort: "low" | "medium" | "high" | "max" } {
+  const enabled = process.env.LLM_THINKING_ENABLED === "true";
+  const effort = (process.env.LLM_REASONING_EFFORT as any) || "high";
+  if (!["low", "medium", "high", "max"].includes(effort)) {
+    return { enabled, effort: "high" };
+  }
+  return { enabled, effort };
+}
+
 export interface ChatMessageParam {
   role: "system" | "user" | "assistant";
   content: string;
@@ -60,6 +64,8 @@ interface ChatOptions {
   temperature?: number;
   max_tokens?: number;
   response_format?: { type: "json_object" };
+  reasoning_effort?: "low" | "medium" | "high" | "max";
+  thinking?: boolean;
 }
 
 /** 一次性返回完整文本。 */
@@ -68,27 +74,50 @@ export async function chatCompletion(
   opts: ChatOptions = {},
 ): Promise<string> {
   const cfg = getConfig();
-  const isMiniMax = cfg.path === "/text/chatcompletion_v2" || cfg.model.toLowerCase().includes("minimax");
+  const thinkingCfg = getDeepSeekThinkingConfig();
+  const isMiniMaxAnthropic = cfg.path === "/v1/messages" || (cfg.model.toLowerCase().includes("minimax") && cfg.path.includes("anthropic"));
+  const isDeepSeek = cfg.model.toLowerCase().includes("deepseek") && cfg.path === "/chat/completions";
+  const isDeepSeekThinking = isDeepSeek && thinkingCfg.enabled;
 
-  // MiniMax codingplan: 把 content 改成 text
-  const adaptedMessages = isMiniMax
-    ? messages.map((m) => ({ role: m.role, text: m.content }))
-    : messages;
+  let body: any;
 
-  const res = await undiciFetch(cfg.baseURL + cfg.path, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify({
+  if (isMiniMaxAnthropic) {
+    // Anthropic 格式：content 要是数组 [{"type": "text", "text": "..."}]
+    body = {
+      model: cfg.model,
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: [{ type: "text", text: m.content }],
+      })),
+      max_tokens: opts.max_tokens ?? 32000,
+    };
+  } else {
+    const isMiniMax = cfg.path === "/text/chatcompletion_v2" || cfg.model.toLowerCase().includes("minimax");
+    const adaptedMessages = isMiniMax
+      ? messages.map((m) => ({ role: m.role, text: m.content }))
+      : messages;
+    body = {
       model: cfg.model,
       messages: adaptedMessages,
       temperature: opts.temperature ?? 0.7,
       max_tokens: opts.max_tokens ?? 32000,
       ...(opts.response_format ? { response_format: opts.response_format } : {}),
-    }),
-    dispatcher: llmDispatcher,
+    };
+    // DeepSeek 深度思考模式：extra_body 传 thinking 开关 + reasoning_effort
+    if (isDeepSeekThinking) {
+      body.reasoning_effort = thinkingCfg.effort;
+      body.extra_body = { thinking: { type: "enabled" } };
+    }
+  }
+
+  const res = await fetch(cfg.baseURL + cfg.path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(LLM_FETCH_TIMEOUT_MS),
   });
 
   if (!res.ok) {
@@ -99,13 +128,22 @@ export async function chatCompletion(
   }
 
   const data: any = await res.json();
-  // MiniMax 在 base_resp 里也会塞业务错误码，需要单独检查
   if (data?.base_resp && data.base_resp.status_code !== 0) {
     throw new Error(`LLM 业务错误：${data.base_resp.status_msg}`);
   }
-  // MiniMax codingplan 返回 text 字段，OpenAI 返回 content
-  let content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.message?.text ?? "";
-  // 去除 markdown code fence（如 ```json ... ```）
+
+  let content = "";
+  if (isMiniMaxAnthropic) {
+    // Anthropic 响应：content 是数组 [{"type": "thinking", ...}, {"type": "text", "text": "..."}]
+    // 找到 type === "text" 的那个
+    const textItem = data?.content?.find((c: any) => c.type === "text");
+    content = textItem?.text ?? "";
+  } else {
+    // OpenAI/MiniMax/DeepSeek 响应
+    // DeepSeek 深度思考模式下 reasoning_content 会一起返回，只取 content（思考过程对用户不可见）
+    content = data?.choices?.[0]?.message?.content ?? data?.choices?.[0]?.message?.text ?? "";
+  }
+  // 去除 markdown code fence
   content = content.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/i, "").trim();
   return content;
 }
@@ -117,27 +155,50 @@ export async function chatCompletionStream(
   onDelta: (chunk: string) => void,
 ): Promise<string> {
   const cfg = getConfig();
-  const isMiniMax = cfg.path === "/text/chatcompletion_v2" || cfg.model.toLowerCase().includes("minimax");
+  const thinkingCfg = getDeepSeekThinkingConfig();
+  const isMiniMaxAnthropic = cfg.path === "/v1/messages" || (cfg.model.toLowerCase().includes("minimax") && cfg.path.includes("anthropic"));
+  const isDeepSeek = cfg.model.toLowerCase().includes("deepseek") && cfg.path === "/chat/completions";
+  const isDeepSeekThinking = isDeepSeek && thinkingCfg.enabled;
 
-  // MiniMax codingplan: 把 content 改成 text
-  const adaptedMessages = isMiniMax
-    ? messages.map((m) => ({ role: m.role, text: m.content }))
-    : messages;
+  let body: any;
 
-  const res = await undiciFetch(cfg.baseURL + cfg.path, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${cfg.apiKey}`,
-    },
-    body: JSON.stringify({
+  if (isMiniMaxAnthropic) {
+    body = {
+      model: cfg.model,
+      messages: messages.map((m) => ({
+        role: m.role,
+        content: [{ type: "text", text: m.content }],
+      })),
+      max_tokens: opts.max_tokens ?? 32000,
+      stream: true,
+    };
+  } else {
+    const isMiniMax = cfg.path === "/text/chatcompletion_v2" || cfg.model.toLowerCase().includes("minimax");
+    const adaptedMessages = isMiniMax
+      ? messages.map((m) => ({ role: m.role, text: m.content }))
+      : messages;
+    body = {
       model: cfg.model,
       messages: adaptedMessages,
       stream: true,
       temperature: opts.temperature ?? 0.7,
       max_tokens: opts.max_tokens ?? 32000,
-    }),
-    dispatcher: llmDispatcher,
+    };
+    // DeepSeek 深度思考模式
+    if (isDeepSeekThinking) {
+      body.reasoning_effort = opts.reasoning_effort ?? "high";
+      body.extra_body = { thinking: { type: "enabled" } };
+    }
+  }
+
+  const res = await fetch(cfg.baseURL + cfg.path, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${cfg.apiKey}`,
+    },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(LLM_FETCH_TIMEOUT_MS),
   });
 
   if (!res.ok || !res.body) {
@@ -167,8 +228,19 @@ export async function chatCompletionStream(
       if (payload === "[DONE]") return full;
       try {
         const json: any = JSON.parse(payload);
-        // MiniMax streaming 返回 choices[0].delta.text，OpenAI 返回 choices[0].delta.content
-        const delta = json?.choices?.[0]?.delta?.content ?? json?.choices?.[0]?.delta?.text ?? "";
+        let delta = "";
+        if (isMiniMaxAnthropic) {
+          // Anthropic SSE: content_block_delta / 兼容非流式 content 数组
+          if (json?.type === "content_block_delta") {
+            delta = json?.delta?.text ?? "";
+          } else {
+            const textItem = json?.content?.find((c: any) => c.type === "text");
+            delta = textItem?.text ?? "";
+          }
+        } else {
+          // OpenAI/MiniMax/DeepSeek 响应（DeepSeek 思考模式的 reasoning_content 被忽略）
+          delta = json?.choices?.[0]?.delta?.content ?? json?.choices?.[0]?.delta?.text ?? "";
+        }
         if (delta) {
           full += delta;
           onDelta(delta);
