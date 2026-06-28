@@ -14,6 +14,59 @@ export function extractJsonFromLlmText(text: string): string {
   return s;
 }
 
+/**
+ * 仅在「字符串外部」把全角结构标点归一化为半角。
+ * 解决 LLM 把结构性冒号/逗号/括号误打成全角（如 "title"："业务层"）导致的解析失败。
+ * 关键：字符串内部的中文标点（detail 长文本里的「：、，」）保持不动，避免破坏正文。
+ */
+export function sanitizeJsonStructure(s: string): string {
+  const map: Record<string, string> = {
+    "：": ":",
+    "，": ",",
+    "｛": "{",
+    "｝": "}",
+    "［": "[",
+    "］": "]",
+  };
+  let out = "";
+  let inString = false;
+  let escape = false;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (inString) {
+      out += ch;
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (ch === '"') {
+      inString = true;
+      out += ch;
+      continue;
+    }
+    out += map[ch] ?? ch;
+  }
+  return out;
+}
+
+/** 从原生 JSON 解析错误信息里提取 position，并返回出错位置附近的上下文片段，便于日志定位。 */
+export function jsonErrorContext(text: string, err: unknown): string | undefined {
+  const msg = err instanceof Error ? err.message : String(err);
+  const m = /position\s+(\d+)/i.exec(msg);
+  if (!m) return undefined;
+  const pos = Number(m[1]);
+  if (!Number.isFinite(pos)) return undefined;
+  const from = Math.max(0, pos - 80);
+  const to = Math.min(text.length, pos + 80);
+  const snippet = text.slice(from, to).replace(/\n/g, "\\n");
+  return `…${snippet}…  (↑ around position ${pos})`;
+}
+
 export function isLikelyTruncatedJson(text: string): boolean {
   const s = extractJsonFromLlmText(text).trim();
   if (!s.startsWith("{")) return true;
@@ -48,15 +101,21 @@ export function isLikelyTruncatedJson(text: string): boolean {
  */
 export function parseLlmJson<T = unknown>(text: string): T {
   const stripped = extractJsonFromLlmText(text);
+  // 1) 严格解析
   try {
     return JSON.parse(stripped) as T;
   } catch (strictErr) {
+    // 2) jsonrepair（缺逗号、尾逗号、未转义引号等）
     try {
-      const repaired = jsonrepair(stripped);
-      return JSON.parse(repaired) as T;
+      return JSON.parse(jsonrepair(stripped)) as T;
     } catch {
-      // 抛出原始严格解析错误，便于定位真实位置
-      throw strictErr;
+      // 3) 先归一化「字符串外」的全角结构标点（全角冒号/逗号/括号），再 jsonrepair
+      try {
+        return JSON.parse(jsonrepair(sanitizeJsonStructure(stripped))) as T;
+      } catch {
+        // 仍失败：抛出原始严格解析错误，便于定位真实位置
+        throw strictErr;
+      }
     }
   }
 }

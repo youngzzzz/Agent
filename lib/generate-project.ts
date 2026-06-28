@@ -1,4 +1,9 @@
-import { extractJsonFromLlmText, isLikelyTruncatedJson, parseLlmJson } from "@/lib/parse-llm-json";
+import {
+  extractJsonFromLlmText,
+  isLikelyTruncatedJson,
+  jsonErrorContext,
+  parseLlmJson,
+} from "@/lib/parse-llm-json";
 
 export class GenerateParseError extends Error {
   constructor(
@@ -40,6 +45,8 @@ export function parseGeneratedProject(text: string): any {
         rawLen: text.length,
         tail: text.slice(-120),
         cause: err?.message,
+        // 出错位置附近的片段：生产环境也能在 Vercel 日志直接看到坏在哪一行
+        errorContext: jsonErrorContext(stripped, err),
       },
     );
   }

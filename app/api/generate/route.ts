@@ -19,6 +19,12 @@ import { runLlmWithFallback } from "@/lib/llm-fallback";
 import { acquireLlmSlot, getClientIp, OverloadedError } from "@/lib/concurrency";
 import { GenerateAnalysisInput } from "@/lib/types";
 
+// 强制 Node 运行时（需要 process.env / 服务端 fetch），并放宽函数最大执行时长。
+// 深度方案会等待完整 LLM 响应，默认超时会被中断导致前端 "Failed to fetch"。
+// 300s 在 Vercel Hobby / Pro（Fluid Compute）均可用，超出会被自动截断而非构建失败。
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
 /** 按方案深度返回内容详尽度要求 + 输出上限 */
 function getDepthSpec(depth: string): {
   limits: string;
@@ -71,6 +77,7 @@ function buildSystemPrompt(depth: string, withNativeSearch: boolean): string {
 每个模块需要包含：title、summary、bullets、detail、deliverables、risks、suggestedPrompts。
 直接输出合法的 JSON 对象，不要任何前言、后语或 Markdown 代码块。
 JSON 合法性要求（重要）：字符串值内部如需引号，一律使用中文引号「」或""，禁止使用英文半角双引号 "，避免破坏 JSON；字符串内部如需换行（如 detail 字段的分段），必须写成转义的 \\n，不要直接输出真实换行符。
+结构符号必须用半角：键值之间的冒号、元素之间的逗号、对象 {} 与数组 [] 一律使用半角符号（: , { } [ ]），绝对不要写成全角（： ， ｛ ｝ ［ ］）。全角标点只允许出现在字符串值的中文正文里。
 ${limits}
 结构如下：
 {

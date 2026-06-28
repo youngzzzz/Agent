@@ -10,6 +10,10 @@ import { runLlmWithFallback } from "@/lib/llm-fallback";
 import { acquireLlmSlot, getClientIp, OverloadedError } from "@/lib/concurrency";
 import { ChatMessage, ModuleItem, Project } from "@/lib/types";
 
+// 强制 Node 运行时，并放宽函数最大执行时长，避免联网检索 / 长回复被默认超时中断。
+export const runtime = "nodejs";
+export const maxDuration = 300;
+
 const CHAT_FORMAT_RULES = `
 回复格式要求：
 - 使用结构化 Markdown，不要用大段纯文本
