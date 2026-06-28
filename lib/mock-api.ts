@@ -25,11 +25,50 @@ export async function generateAnalysisWithLLM(input: GenerateAnalysisInput): Pro
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-  if (!res.ok) {
+
+  // 过载等快路径仍返回普通 JSON 错误（非 200）
+  if (!res.ok || !res.body) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error || `HTTP ${res.status}`);
   }
-  return (await res.json()) as Project;
+
+  // 流式 SSE：生成期间持续收到 start/ping 心跳，最终收到 result 或 error 事件。
+  // 这样连接全程有数据流动，规避网关/代理对长请求的超时（"Failed to fetch"）。
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let project: Project | null = null;
+  let streamError: string | null = null;
+
+  outer: while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload || payload === "[DONE]") {
+        if (payload === "[DONE]") break outer;
+        continue;
+      }
+      try {
+        const evt: any = JSON.parse(payload);
+        if (evt.type === "result") project = evt.project as Project;
+        else if (evt.type === "error") streamError = evt.error || "生成失败";
+        // type === "start" / "ping" 为心跳，忽略
+      } catch {
+        // 忽略无法解析的行
+      }
+    }
+  }
+
+  if (streamError) throw new Error(streamError);
+  if (!project) throw new Error("生成失败：未收到完整方案");
+  return project;
 }
 
 /* -------------------------- 模块对话 -------------------------- */
