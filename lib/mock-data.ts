@@ -134,7 +134,7 @@ export const PRESET_TEMPLATES: GenerateAnalysisInput[] = [
     targetUser: "口腔诊所、连锁齿科与有口腔护理需求的用户",
     painPoints: "缺乏个性化口腔健康管理、复诊提醒难、患者教育与转化效率低",
     outputPurpose: "产品方案",
-    depth: "深度版",
+    depth: "标准版",
   },
   {
     industry: "智能耳机行业",
@@ -142,7 +142,7 @@ export const PRESET_TEMPLATES: GenerateAnalysisInput[] = [
     targetUser: "有睡眠障碍、追求睡眠质量的用户",
     painPoints: "入睡难、睡眠监测不准、降噪与佩戴舒适度难以兼顾",
     outputPurpose: "产品方案",
-    depth: "深度版",
+    depth: "标准版",
   },
   {
     industry: "ToB AI 行业",
@@ -150,7 +150,7 @@ export const PRESET_TEMPLATES: GenerateAnalysisInput[] = [
     targetUser: "需要构建与运营 AI Agent 的企业与开发团队",
     painPoints: "Agent 编排复杂、工具接入成本高、可观测与治理能力不足",
     outputPurpose: "产品方案",
-    depth: "深度版",
+    depth: "标准版",
   },
   {
     industry: "教育行业",
@@ -166,7 +166,7 @@ export const PRESET_TEMPLATES: GenerateAnalysisInput[] = [
     targetUser: "解决方案 / 售前 / 投标团队",
     painPoints: "投标周期短、标书复用率低、专家资源稀缺",
     outputPurpose: "咨询交付",
-    depth: "深度版",
+    depth: "标准版",
   },
   {
     industry: "高端旅游行业",

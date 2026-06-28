@@ -11,7 +11,8 @@ import { GenerateAnalysisInput } from "@/lib/types";
 import { Sparkles, ArrowRight, GraduationCap, FileSpreadsheet, Plane, Clock, Smile, Headphones, Bot } from "lucide-react";
 
 const PURPOSES = ["行业分析", "产品方案", "咨询交付", "创业验证"];
-const DEPTHS = ["快速版", "标准版", "深度版"];
+// 深度版暂时隐藏（后端仍支持，传入「深度版」仍可生成）：标准版当前稳定无失败。
+const DEPTHS = ["快速版", "标准版"];
 
 export default function HomePage() {
   const router = useRouter();

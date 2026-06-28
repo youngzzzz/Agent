@@ -10,11 +10,12 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/primitives";
 import { Modal } from "@/components/ui/modal";
 import { useProjectStore } from "@/lib/store";
+import { useTemplateStore } from "@/lib/template-store";
 import { ModuleItem } from "@/lib/types";
 import { useToast } from "@/components/ui/toast";
 import { useGeneration } from "@/components/generation-provider";
 import { formatDate } from "@/lib/utils";
-import { RefreshCcw, Save, Download, Share2, Loader2, Clock, ArrowRight } from "lucide-react";
+import { RefreshCcw, BookMarked, Download, Share2, Loader2, Clock, ArrowRight } from "lucide-react";
 
 export default function WorkspacePage() {
   const params = useParams<{ id: string }>();
@@ -23,6 +24,7 @@ export default function WorkspacePage() {
   const { startGeneration } = useGeneration();
   const project = useProjectStore((s) => s.projects.find((p) => p.id === params.id));
   const upsert = useProjectStore((s) => s.upsertProject);
+  const addTemplate = useTemplateStore((s) => s.addTemplate);
 
   const [chatOpen, setChatOpen] = useState(false);
   const [detailOpen, setDetailOpen] = useState(false);
@@ -104,9 +106,28 @@ export default function WorkspacePage() {
     setDetailOpen(true);
   };
 
-  const onSave = () => {
-    upsert({ ...project, updatedAt: new Date().toISOString() });
-    toast("已保存到历史项目");
+  const onSaveTemplate = () => {
+    if (project.status !== "generated") {
+      toast("方案尚未生成完成，暂不能保存为模板");
+      return;
+    }
+    const now = new Date().toISOString();
+    const snapshot = { ...project, updatedAt: now };
+    // 同时刷新历史项目，并写入模板库
+    upsert(snapshot);
+    addTemplate({
+      id: `tpl-${project.id}`,
+      name: project.name,
+      industry: project.industry,
+      scenario: project.scenario,
+      outputPurpose: project.outputPurpose,
+      depth: project.depth,
+      painPoints: project.painPoints,
+      savedAt: now,
+      sourceProjectId: project.id,
+      project: snapshot,
+    });
+    toast("已保存到模板库，可前往模板库生成 PPT");
   };
 
   const onRegenerate = () => {
@@ -160,8 +181,8 @@ export default function WorkspacePage() {
                 <Button size="sm" variant="outline" onClick={onRegenerate}>
                   <RefreshCcw className="h-3.5 w-3.5" /> 重新生成
                 </Button>
-                <Button size="sm" variant="outline" onClick={onSave}>
-                  <Save className="h-3.5 w-3.5" /> 保存
+                <Button size="sm" variant="outline" onClick={onSaveTemplate}>
+                  <BookMarked className="h-3.5 w-3.5" /> 保存模板
                 </Button>
                 <Button size="sm" variant="outline" onClick={onExportMd}>
                   <Download className="h-3.5 w-3.5" /> 导出 Markdown

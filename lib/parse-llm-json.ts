@@ -54,6 +54,18 @@ export function sanitizeJsonStructure(s: string): string {
   return out;
 }
 
+/**
+ * 修复「数组/对象被双引号包裹」的畸形，如：
+ *   "suggestedPrompts":"["a","b"]"   →   "suggestedPrompts":["a","b"]
+ * 仅当容器符号（[ 或 {）紧跟在 :" 之后时才处理——正常中文字符串值不会以 [ / { 开头，
+ * 因此不会误伤正文（如 detail 里出现的 [1] 等）。作为最后一道修复使用。
+ */
+export function repairQuoteWrappedContainers(s: string): string {
+  return s
+    .replace(/:\s*"(\[[\s\S]*?\])"/g, ":$1")
+    .replace(/:\s*"(\{[\s\S]*?\})"/g, ":$1");
+}
+
 /** 从原生 JSON 解析错误信息里提取 position，并返回出错位置附近的上下文片段，便于日志定位。 */
 export function jsonErrorContext(text: string, err: unknown): string | undefined {
   const msg = err instanceof Error ? err.message : String(err);
@@ -101,21 +113,25 @@ export function isLikelyTruncatedJson(text: string): boolean {
  */
 export function parseLlmJson<T = unknown>(text: string): T {
   const stripped = extractJsonFromLlmText(text);
-  // 1) 严格解析
-  try {
-    return JSON.parse(stripped) as T;
-  } catch (strictErr) {
-    // 2) jsonrepair（缺逗号、尾逗号、未转义引号等）
+  // 逐级尝试：严格 → jsonrepair → 归一化全角结构标点 → 修复被引号包裹的数组/对象。
+  // 越往后越激进，保留第一个（最贴近真实位置的）错误用于上抛。
+  const candidates: Array<() => unknown> = [
+    () => JSON.parse(stripped),
+    () => JSON.parse(jsonrepair(stripped)),
+    () => JSON.parse(jsonrepair(sanitizeJsonStructure(stripped))),
+    () =>
+      JSON.parse(
+        jsonrepair(repairQuoteWrappedContainers(sanitizeJsonStructure(stripped))),
+      ),
+  ];
+
+  let firstErr: unknown;
+  for (const attempt of candidates) {
     try {
-      return JSON.parse(jsonrepair(stripped)) as T;
-    } catch {
-      // 3) 先归一化「字符串外」的全角结构标点（全角冒号/逗号/括号），再 jsonrepair
-      try {
-        return JSON.parse(jsonrepair(sanitizeJsonStructure(stripped))) as T;
-      } catch {
-        // 仍失败：抛出原始严格解析错误，便于定位真实位置
-        throw strictErr;
-      }
+      return attempt() as T;
+    } catch (err) {
+      if (firstErr === undefined) firstErr = err;
     }
   }
+  throw firstErr;
 }
