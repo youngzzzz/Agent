@@ -128,125 +128,184 @@ ${input.painPoints ? `痛点：${input.painPoints}` : ""}
   return prompt;
 }
 
+/** 执行一次完整生成，成功返回 project，失败抛出 GenerateParseError。 */
+async function runGeneration(input: GenerateAnalysisInput): Promise<any> {
+  const { maxTokens } = getDepthSpec(input.depth);
+
+  const webEnabled = isWebSearchEnabled();
+  const strategy = webEnabled ? resolveWebSearchStrategy(getLLMConfig()) : "disabled";
+  // DeepSeek 原生 web_search 走 Tool Loop；其余（MiniMax / 第三方）走预检索
+  const useNativeToolLoop = strategy === "deepseek-anthropic-native";
+
+  let searchContext = "";
+  let webSearchUsed = false;
+
+  if (webEnabled && !useNativeToolLoop) {
+    const search = await gatherSearchContextForGenerate(input);
+    searchContext = search.context;
+    webSearchUsed = search.used;
+  }
+
+  const systemPrompt = buildSystemPrompt(input.depth, useNativeToolLoop);
+  const cfg = getLLMConfig();
+
+  let project: any;
+  let lastError: GenerateParseError | null = null;
+
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const llmStart = Date.now();
+    const userPrompt = buildUserPrompt(input, searchContext, attempt > 0);
+    const messages = [
+      { role: "system" as const, content: systemPrompt },
+      { role: "user" as const, content: userPrompt },
+    ];
+
+    let text: string;
+    if (useNativeToolLoop) {
+      const r = await runLlmWithFallback((c) =>
+        chatCompletionWithWebSearch(messages, { max_tokens: maxTokens }, c),
+      );
+      text = r.text;
+      webSearchUsed = r.webSearchUsed;
+    } else {
+      text = await runLlmWithFallback((c) =>
+        chatCompletionStream(messages, { max_tokens: maxTokens }, () => {}, c),
+      );
+    }
+
+    const llmMs = Date.now() - llmStart;
+    console.info(
+      `[generate] attempt=${attempt + 1} LLM ${llmMs}ms strategy=${strategy} nativeLoop=${useNativeToolLoop} webSearch=${webSearchUsed} len=${text.length}`,
+    );
+
+    let parsedOk = false;
+    let parseErrMsg: string | undefined;
+    try {
+      project = parseGeneratedProject(text);
+      normalizeProjectModules(project);
+      if (!isValidGeneratedProject(project)) {
+        throw new GenerateParseError("方案结构不完整（layers 为空或模块过少）", {
+          moduleCount: (project?.layers ?? []).reduce(
+            (n: number, l: any) => n + (l.modules?.length ?? 0),
+            0,
+          ),
+        });
+      }
+      parsedOk = true;
+      lastError = null;
+    } catch (err) {
+      lastError =
+        err instanceof GenerateParseError ? err : new GenerateParseError(String(err));
+      parseErrMsg = lastError.message;
+      console.warn(
+        `[generate] attempt ${attempt + 1} failed:`,
+        lastError.message,
+        lastError.meta,
+      );
+    }
+
+    await dumpGenerateDebug({
+      at: new Date().toISOString(),
+      input,
+      strategy,
+      nativeToolLoop: useNativeToolLoop,
+      webSearchUsed,
+      model: cfg.model,
+      baseURL: cfg.baseURL + cfg.path,
+      systemPrompt,
+      userPrompt,
+      searchContext: searchContext || undefined,
+      rawResponse: text,
+      parsedOk,
+      parseError: parseErrMsg,
+    });
+
+    if (parsedOk) break;
+  }
+
+  if (lastError || !project) {
+    throw lastError || new GenerateParseError("方案生成失败，请重试");
+  }
+
+  finalizeProjectTimestamps(project);
+
+  const moduleCount = project.layers.reduce(
+    (n: number, l: any) => n + l.modules.length,
+    0,
+  );
+  console.info(
+    `[generate] parsed strategy=${strategy} webSearch=${webSearchUsed} modules=${moduleCount}`,
+  );
+  return project;
+}
+
+// 心跳间隔：定期推送 ping 事件，避免长生成期间连接被网关/代理判定空闲而中断
+const HEARTBEAT_MS = 10_000;
+
 export async function POST(req: NextRequest) {
   const start = Date.now();
   let release: (() => void) | null = null;
   try {
     const input: GenerateAnalysisInput = await req.json();
-    // 并发闸：申请执行槽位，拥塞时抛 OverloadedError → 返回 503/429
+    // 并发闸：申请执行槽位，拥塞时抛 OverloadedError → 返回 503/429（快路径，仍走普通 JSON）
     release = await acquireLlmSlot(getClientIp(req));
 
-    const { maxTokens } = getDepthSpec(input.depth);
+    const encoder = new TextEncoder();
 
-    const webEnabled = isWebSearchEnabled();
-    const strategy = webEnabled ? resolveWebSearchStrategy(getLLMConfig()) : "disabled";
-    // DeepSeek 原生 web_search 走 Tool Loop；其余（MiniMax / 第三方）走预检索
-    const useNativeToolLoop = strategy === "deepseek-anthropic-native";
+    const stream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        let closed = false;
+        const send = (obj: unknown) => {
+          if (closed) return;
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
+        };
 
-    let searchContext = "";
-    let webSearchUsed = false;
+        // 立即吐首字节：让网关/CDN 马上拿到响应头，规避「首字节超时」（如 Cloudflare 524）
+        send({ type: "start" });
 
-    if (webEnabled && !useNativeToolLoop) {
-      const search = await gatherSearchContextForGenerate(input);
-      searchContext = search.context;
-      webSearchUsed = search.used;
-    }
+        // 周期心跳，保持连接活跃
+        const heartbeat = setInterval(() => send({ type: "ping" }), HEARTBEAT_MS);
 
-    const systemPrompt = buildSystemPrompt(input.depth, useNativeToolLoop);
-    const cfg = getLLMConfig();
-
-    let project: any;
-    let lastError: GenerateParseError | null = null;
-
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const llmStart = Date.now();
-      const userPrompt = buildUserPrompt(input, searchContext, attempt > 0);
-      const messages = [
-        { role: "system" as const, content: systemPrompt },
-        { role: "user" as const, content: userPrompt },
-      ];
-
-      let text: string;
-      if (useNativeToolLoop) {
-        const r = await runLlmWithFallback((c) =>
-          chatCompletionWithWebSearch(messages, { max_tokens: maxTokens }, c),
-        );
-        text = r.text;
-        webSearchUsed = r.webSearchUsed;
-      } else {
-        text = await runLlmWithFallback((c) =>
-          chatCompletionStream(messages, { max_tokens: maxTokens }, () => {}, c),
-        );
-      }
-
-      const llmMs = Date.now() - llmStart;
-      console.info(
-        `[generate] attempt=${attempt + 1} LLM ${llmMs}ms strategy=${strategy} nativeLoop=${useNativeToolLoop} webSearch=${webSearchUsed} len=${text.length}`,
-      );
-
-      let parsedOk = false;
-      let parseErrMsg: string | undefined;
-      try {
-        project = parseGeneratedProject(text);
-        normalizeProjectModules(project);
-        if (!isValidGeneratedProject(project)) {
-          throw new GenerateParseError("方案结构不完整（layers 为空或模块过少）", {
-            moduleCount: (project?.layers ?? []).reduce(
-              (n: number, l: any) => n + (l.modules?.length ?? 0),
+        try {
+          const project = await runGeneration(input);
+          console.info(
+            `[generate] success total ${Date.now() - start}ms modules=${project.layers.reduce(
+              (n: number, l: any) => n + l.modules.length,
               0,
-            ),
-          });
+            )}`,
+          );
+          send({ type: "result", project });
+        } catch (err: any) {
+          console.error(`[generate] error after ${Date.now() - start}ms:`, err);
+          send({ type: "error", error: err?.message || "生成失败" });
+        } finally {
+          clearInterval(heartbeat);
+          if (!closed) {
+            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
+            controller.close();
+            closed = true;
+          }
+          release?.();
+          release = null;
         }
-        parsedOk = true;
-        lastError = null;
-      } catch (err) {
-        lastError =
-          err instanceof GenerateParseError ? err : new GenerateParseError(String(err));
-        parseErrMsg = lastError.message;
-        console.warn(
-          `[generate] attempt ${attempt + 1} failed:`,
-          lastError.message,
-          lastError.meta,
-        );
-      }
+      },
+      cancel() {
+        release?.();
+        release = null;
+      },
+    });
 
-      await dumpGenerateDebug({
-        at: new Date().toISOString(),
-        input,
-        strategy,
-        nativeToolLoop: useNativeToolLoop,
-        webSearchUsed,
-        model: cfg.model,
-        baseURL: cfg.baseURL + cfg.path,
-        systemPrompt,
-        userPrompt,
-        searchContext: searchContext || undefined,
-        rawResponse: text,
-        parsedOk,
-        parseError: parseErrMsg,
-      });
-
-      if (parsedOk) break;
-    }
-
-    if (lastError || !project) {
-      return NextResponse.json(
-        { error: lastError?.message || "方案生成失败，请重试" },
-        { status: 500 },
-      );
-    }
-
-    finalizeProjectTimestamps(project);
-
-    const moduleCount = project.layers.reduce(
-      (n: number, l: any) => n + l.modules.length,
-      0,
-    );
-    console.info(
-      `[generate] success total ${Date.now() - start}ms strategy=${strategy} webSearch=${webSearchUsed} modules=${moduleCount}`,
-    );
-    return NextResponse.json(project);
+    return new Response(stream, {
+      headers: {
+        "Content-Type": "text/event-stream; charset=utf-8",
+        "Cache-Control": "no-cache, no-transform",
+        Connection: "keep-alive",
+        // 关闭 Nginx 等反向代理的响应缓冲，确保心跳实时下发
+        "X-Accel-Buffering": "no",
+      },
+    });
   } catch (err: any) {
+    release?.();
     if (err instanceof OverloadedError) {
       console.warn(`[generate] overloaded: ${err.message}`);
       return NextResponse.json({ error: err.message }, { status: err.status });
@@ -256,7 +315,5 @@ export async function POST(req: NextRequest) {
       { error: err?.message || "生成失败" },
       { status: 500 },
     );
-  } finally {
-    release?.();
   }
 }
