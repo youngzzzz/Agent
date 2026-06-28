@@ -53,3 +53,19 @@ export interface ChatMessage {
   timestamp: string;
   contextModuleId?: string;
 }
+
+/** 用户从方案页保存下来的模板：内含完整 Project 快照，可直接生成 PPT */
+export interface SavedTemplate {
+  id: string;
+  name: string;
+  industry: string;
+  scenario: string;
+  outputPurpose: string;
+  depth: string;
+  painPoints?: string;
+  savedAt: string;
+  /** 来源方案的 id，同一方案重复保存时覆盖更新 */
+  sourceProjectId: string;
+  /** 完整方案快照，生成 PPT 时无需再调用 LLM */
+  project: Project;
+}
