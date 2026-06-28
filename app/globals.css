@@ -22,3 +22,23 @@ body {
 .scrollbar-thin::-webkit-scrollbar { width: 8px; height: 8px; }
 .scrollbar-thin::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 8px; }
 .scrollbar-thin::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
+
+@keyframes modal-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+.modal-pop { animation: modal-pop 0.18s ease-out; }
+
+/* Mermaid / XMind 风格流程图 */
+.xmind-canvas svg .node rect,
+.xmind-canvas svg .node polygon,
+.xmind-canvas svg .node circle,
+.xmind-canvas svg .node ellipse {
+  filter: drop-shadow(0 1px 2px rgba(15, 23, 42, 0.08));
+}
+.xmind-canvas svg .edgePath path {
+  stroke-width: 2px;
+}
+.xmind-canvas svg .nodeLabel {
+  font-size: 13px !important;
+}

@@ -63,9 +63,9 @@ const MODULE_TEMPLATES: Record<LayerName, { title: string; tags?: string[] }[]> 
 };
 
 const SUGGESTED: Record<LayerName, string[]> = {
-  business: ["继续展开", "给出面试讲法", "转成咨询方案"],
+  business: ["继续展开", "转成咨询方案"],
   ai: ["生成技术方案", "生成流程图", "继续展开"],
-  product: ["生成 PRD", "生成页面流程", "转成作品集"],
+  product: ["生成 PRD", "生成页面流程"],
   delivery: ["生成交付方案", "生成商业化方案", "继续展开"],
 };
 
@@ -128,6 +128,30 @@ export function buildProject(input: GenerateAnalysisInput, presetName?: string):
 }
 
 export const PRESET_TEMPLATES: GenerateAnalysisInput[] = [
+  {
+    industry: "口腔健康行业",
+    scenario: "口腔健康Agent",
+    targetUser: "口腔诊所、连锁齿科与有口腔护理需求的用户",
+    painPoints: "缺乏个性化口腔健康管理、复诊提醒难、患者教育与转化效率低",
+    outputPurpose: "产品方案",
+    depth: "深度版",
+  },
+  {
+    industry: "智能耳机行业",
+    scenario: "智能睡眠耳机",
+    targetUser: "有睡眠障碍、追求睡眠质量的用户",
+    painPoints: "入睡难、睡眠监测不准、降噪与佩戴舒适度难以兼顾",
+    outputPurpose: "产品方案",
+    depth: "深度版",
+  },
+  {
+    industry: "ToB AI 行业",
+    scenario: "AgentOS",
+    targetUser: "需要构建与运营 AI Agent 的企业与开发团队",
+    painPoints: "Agent 编排复杂、工具接入成本高、可观测与治理能力不足",
+    outputPurpose: "产品方案",
+    depth: "深度版",
+  },
   {
     industry: "教育行业",
     scenario: "招生转化 AI 助手",

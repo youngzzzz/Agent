@@ -4,19 +4,19 @@ import { useRouter } from "next/navigation";
 import { TopNav } from "@/components/top-nav";
 import { Card, Input, Label, Select, Textarea, Badge } from "@/components/ui/primitives";
 import { Button } from "@/components/ui/button";
-import { mockGenerateAnalysis } from "@/lib/mock-api";
-import { useProjectStore } from "@/lib/store";
+import { Modal } from "@/components/ui/modal";
+import { useGeneration } from "@/components/generation-provider";
 import { PRESET_TEMPLATES } from "@/lib/mock-data";
 import { GenerateAnalysisInput } from "@/lib/types";
-import { Loader2, Sparkles, ArrowRight, GraduationCap, FileSpreadsheet, Plane } from "lucide-react";
+import { Sparkles, ArrowRight, GraduationCap, FileSpreadsheet, Plane, Clock, Smile, Headphones, Bot } from "lucide-react";
 
-const PURPOSES = ["行业分析", "产品方案", "转型学习", "面试作品集", "咨询交付", "创业验证"];
+const PURPOSES = ["行业分析", "产品方案", "咨询交付", "创业验证"];
 const DEPTHS = ["快速版", "标准版", "深度版"];
 
 export default function HomePage() {
   const router = useRouter();
-  const upsert = useProjectStore((s) => s.upsertProject);
-  const [loading, setLoading] = useState(false);
+  const { startGeneration } = useGeneration();
+  const [taskModal, setTaskModal] = useState<{ open: boolean; name: string }>({ open: false, name: "" });
   const [form, setForm] = useState<GenerateAnalysisInput>({
     industry: "",
     scenario: "",
@@ -30,13 +30,12 @@ export default function HomePage() {
     setForm((s) => ({ ...s, [k]: v }));
   }
 
-  async function submit(input?: GenerateAnalysisInput) {
+  function submit(input?: GenerateAnalysisInput) {
     const payload = input || form;
     if (!payload.industry || !payload.scenario) return;
-    setLoading(true);
-    const project = await mockGenerateAnalysis(payload);
-    upsert(project);
-    router.push(`/workspace/${project.id}`);
+    const name = `${payload.industry}｜${payload.scenario}`;
+    startGeneration(payload);
+    setTaskModal({ open: true, name });
   }
 
   return (
@@ -104,10 +103,10 @@ export default function HomePage() {
             </div>
           </div>
           <div className="mt-6 flex justify-end">
-            <Button size="lg" onClick={() => submit()} disabled={loading}>
-              {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
-              {loading ? "正在生成…" : "生成四层拆解方案"}
-              {!loading && <ArrowRight className="h-4 w-4" />}
+            <Button size="lg" onClick={() => submit()} disabled={!form.industry || !form.scenario}>
+              <Sparkles className="h-4 w-4" />
+              生成四层拆解方案
+              <ArrowRight className="h-4 w-4" />
             </Button>
           </div>
         </Card>
@@ -119,7 +118,7 @@ export default function HomePage() {
           </div>
           <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
             {PRESET_TEMPLATES.map((t, i) => {
-              const Icon = [GraduationCap, FileSpreadsheet, Plane][i] || Sparkles;
+              const Icon = [Smile, Headphones, Bot, GraduationCap, FileSpreadsheet, Plane][i] || Sparkles;
               return (
                 <Card
                   key={t.scenario}
@@ -141,6 +140,36 @@ export default function HomePage() {
           </div>
         </section>
       </main>
+
+      <Modal
+        open={taskModal.open}
+        onClose={() => setTaskModal({ open: false, name: "" })}
+        icon={
+          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-brand-50 text-brand">
+            <Clock className="h-4 w-4" />
+          </span>
+        }
+        title="生成任务已创建"
+        footer={
+          <>
+            <Button variant="outline" size="sm" onClick={() => setTaskModal({ open: false, name: "" })}>
+              继续创建
+            </Button>
+            <Button size="sm" onClick={() => router.push("/history")}>
+              查看方案生成进度 <ArrowRight className="h-3.5 w-3.5" />
+            </Button>
+          </>
+        }
+      >
+        <p>
+          <span className="font-medium text-ink-900">「{taskModal.name}」</span>
+          正在后台生成，预计需要 1–2 分钟。
+        </p>
+        <p className="mt-2">
+          完成后会在右下角通知你，期间可继续创建其他方案。可在
+          <span className="font-medium text-ink-700">「历史项目」</span>中查看生成进度。
+        </p>
+      </Modal>
     </div>
   );
 }

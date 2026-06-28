@@ -1,7 +1,11 @@
 "use client";
+import { useEffect } from "react";
 import { ModuleItem } from "@/lib/types";
+import { lockBodyScroll } from "@/lib/scroll-lock";
+import { parseMessageContent, segmentParagraphBlocks } from "@/lib/parse-message";
 import { Button } from "./ui/button";
 import { Badge } from "./ui/primitives";
+import { ChatMessageRenderer } from "./chat-message-renderer";
 import { cn } from "@/lib/utils";
 import { X, MessageSquare, FileText, ListChecks } from "lucide-react";
 
@@ -11,21 +15,29 @@ interface Props {
   onClose: () => void;
   onDiscuss: (m: ModuleItem) => void;
   onGenerateDoc: (m: ModuleItem) => void;
+  /** 是否显示背景遮罩；当聊天抽屉叠加其上时置 false，避免遮罩叠加变暗 */
+  backdrop?: boolean;
 }
 
-export function ModuleDetailDrawer({ open, module, onClose, onDiscuss, onGenerateDoc }: Props) {
+export function ModuleDetailDrawer({ open, module, onClose, onDiscuss, onGenerateDoc, backdrop = true }: Props) {
+  // 抽屉打开时锁定背景滚动：滚轮只作用于深入分析抽屉，不会滚动方案页
+  useEffect(() => {
+    if (!open) return;
+    return lockBodyScroll();
+  }, [open]);
+
   return (
     <>
       <div
         className={cn(
-          "fixed inset-0 z-40 bg-ink-900/20 transition-opacity",
-          open ? "opacity-100" : "pointer-events-none opacity-0",
+          "fixed inset-0 z-40 overscroll-contain bg-ink-900/40 backdrop-blur-[1px] transition-opacity",
+          open && backdrop ? "opacity-100" : "pointer-events-none opacity-0",
         )}
         onClick={onClose}
       />
       <aside
         className={cn(
-          "fixed right-0 top-0 z-50 flex h-full w-[560px] max-w-[96vw] flex-col border-l border-ink-300/60 bg-white shadow-pop transition-transform",
+          "fixed right-0 top-0 z-50 flex h-full w-1/3 min-w-[360px] max-w-[92vw] flex-col border-l border-ink-300/60 bg-white shadow-pop transition-transform duration-300 ease-out",
           open ? "translate-x-0" : "translate-x-full",
         )}
       >
@@ -38,7 +50,7 @@ export function ModuleDetailDrawer({ open, module, onClose, onDiscuss, onGenerat
         </div>
 
         {module && (
-          <div className="flex-1 space-y-6 overflow-y-auto px-5 py-5 scrollbar-thin">
+          <div className="flex-1 space-y-6 overflow-y-auto overscroll-contain px-5 py-5 scrollbar-thin">
             <Block title="一句话摘要">
               <p className="text-sm leading-relaxed text-ink-700">{module.summary}</p>
               {module.tags && module.tags.length > 0 && (
@@ -49,9 +61,11 @@ export function ModuleDetailDrawer({ open, module, onClose, onDiscuss, onGenerat
             </Block>
 
             <Block title="详细拆解">
-              <pre className="whitespace-pre-wrap rounded-lg border border-ink-300/60 bg-ink-50/70 p-4 text-[13px] leading-relaxed text-ink-700">
-                {module.detail}
-              </pre>
+              <ChatMessageRenderer
+                content={module.detail}
+                style="notion"
+                blocks={segmentParagraphBlocks(parseMessageContent(module.detail))}
+              />
             </Block>
 
             <Block title="关键判断">
@@ -87,14 +101,30 @@ export function ModuleDetailDrawer({ open, module, onClose, onDiscuss, onGenerat
           </div>
         )}
 
-        <div className="flex items-center gap-2 border-t border-ink-300/60 px-5 py-3">
-          <Button variant="primary" onClick={() => module && onDiscuss(module)}>
-            <MessageSquare className="h-4 w-4" /> 继续和 AI 讨论
+        <div className="flex items-center gap-1.5 border-t border-ink-300/60 px-3 py-2.5">
+          <Button
+            size="sm"
+            variant="primary"
+            className="min-w-0 flex-1 gap-1 whitespace-nowrap px-2 text-xs"
+            onClick={() => module && onDiscuss(module)}
+          >
+            <MessageSquare className="h-3.5 w-3.5 shrink-0" /> 继续讨论
           </Button>
-          <Button variant="outline" onClick={() => module && onGenerateDoc(module)}>
-            <FileText className="h-4 w-4" /> 生成文档
+          <Button
+            size="sm"
+            variant="outline"
+            className="min-w-0 flex-1 gap-1 whitespace-nowrap px-2 text-xs"
+            onClick={() => module && onGenerateDoc(module)}
+          >
+            <FileText className="h-3.5 w-3.5 shrink-0" /> 生成文档
           </Button>
-          <Button variant="ghost" className="ml-auto">添加到方案大纲</Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="min-w-0 flex-1 whitespace-nowrap px-2 text-xs"
+          >
+            加入大纲
+          </Button>
         </div>
       </aside>
     </>
