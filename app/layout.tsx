@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { ToastProvider } from "@/components/ui/toast";
+import { GenerationProvider } from "@/components/generation-provider";
 
 export const metadata: Metadata = {
   title: "AI Transformation Canvas",
@@ -11,7 +12,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="zh-CN">
       <body className="bg-ink-50 text-ink-900">
-        <ToastProvider>{children}</ToastProvider>
+        <ToastProvider>
+          <GenerationProvider>{children}</GenerationProvider>
+        </ToastProvider>
       </body>
     </html>
   );

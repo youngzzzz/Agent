@@ -41,7 +41,8 @@ export interface Project {
   depth: string;
   createdAt: string;
   updatedAt: string;
-  status: "draft" | "generated";
+  status: "draft" | "generating" | "generated" | "failed";
+  error?: string;
   layers: Layer[];
 }
 

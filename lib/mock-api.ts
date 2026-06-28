@@ -1,6 +1,7 @@
 import { ChatMessage, GenerateAnalysisInput, ModuleItem, Project } from "./types";
 import { buildProject } from "./mock-data";
 import { uid } from "./utils";
+import { isFlowchartRequest } from "./parse-message";
 
 /**
  * 是否启用真实 LLM。默认 true：调用 /api/generate 与 /api/chat。
@@ -12,11 +13,7 @@ const USE_REAL_LLM = process.env.NEXT_PUBLIC_USE_REAL_LLM !== "false";
 
 export async function mockGenerateAnalysis(input: GenerateAnalysisInput): Promise<Project> {
   if (USE_REAL_LLM) {
-    try {
-      return await generateAnalysisWithLLM(input);
-    } catch (err) {
-      console.warn("[generate] fallback to mock:", err);
-    }
+    return await generateAnalysisWithLLM(input);
   }
   await delay(500);
   return buildProject(input);
@@ -128,24 +125,85 @@ async function chatStreamToString(
 
 export function mockReply(messages: ChatMessage[], project: Project, m?: ModuleItem): ChatMessage {
   const last = messages[messages.length - 1];
-  const head = m
-    ? `**${project.name} → ${m.title}**\n\n基于「${last?.content || "继续展开"}」：\n`
-    : `**${project.name}**\n\n`;
-  const body = m
-    ? [
-        `1. 关键判断：${m.summary}`,
-        `2. 落地建议：${m.bullets.slice(0, 3).map((b) => `\n   - ${b}`).join("")}`,
-        `3. 可落地产物：${m.deliverables.join("、")}`,
-        `4. 风险：${m.risks.join("；")}`,
-      ].join("\n")
-    : "请先选择一个模块以获得更具体的展开。";
+  const query = last?.content || "继续展开";
+
+  if (!m) {
+    return {
+      id: uid("msg"),
+      role: "assistant",
+      content: "请先选择一个模块以获得更具体的展开。",
+      timestamp: new Date().toISOString(),
+    };
+  }
+
+  if (isFlowchartRequest(query)) {
+    const content = buildFlowchartReply(project, m);
+    return {
+      id: uid("msg"),
+      role: "assistant",
+      content,
+      timestamp: new Date().toISOString(),
+      contextModuleId: m.id,
+    };
+  }
+
+  const content = [
+    `## ${project.name} → ${m.title}`,
+    "",
+    `> ${m.summary}`,
+    "",
+    "### 关键判断",
+    ...m.bullets.slice(0, 4).map((b) => `- ${b}`),
+    "",
+    "### 落地建议",
+    `- 优先验证：${m.deliverables[0] || "最小可行实验"}`,
+    `- 关注风险：${m.risks.slice(0, 2).join("；") || "数据与预期管理"}`,
+    `- 下一步：结合「${query}」继续细化可执行动作`,
+  ].join("\n");
+
   return {
     id: uid("msg"),
     role: "assistant",
-    content: head + body,
+    content,
     timestamp: new Date().toISOString(),
-    contextModuleId: m?.id,
+    contextModuleId: m.id,
   };
+}
+
+function buildFlowchartReply(project: Project, m: ModuleItem): string {
+  const root = m.title.slice(0, 14);
+  const scenario = project.scenario.slice(0, 16);
+  const deliverable = (m.deliverables[0] || "方案交付").slice(0, 14);
+  const branchLines = m.bullets.slice(0, 3).map((b, i) => {
+    const label = b.slice(0, 16).replace(/[\[\]()]/g, "");
+    return `    分支${i + 1}\n      ${label}`;
+  });
+
+  const mindmap = [
+    "mindmap",
+    `  root((${root}))`,
+    "    输入触发",
+    `      ${scenario}`,
+    "    核心处理",
+    `      ${m.title.slice(0, 14)}`,
+    ...branchLines,
+    "    输出验证",
+    `      ${deliverable}`,
+  ].join("\n");
+
+  return [
+    `## ${m.title} · 流程图`,
+    "",
+    `> ${m.summary}`,
+    "",
+    "```mermaid",
+    mindmap,
+    "```",
+    "",
+    "### 说明",
+    "- 思维导图展示从输入、处理到输出的主路径",
+    "- 可在各分支继续追问「继续展开」获得子流程细节",
+  ].join("\n");
 }
 
 function delay(ms: number) {

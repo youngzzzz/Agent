@@ -6,6 +6,7 @@
  *   LLM_BASE_URL     必填，到 /v1 为止（不含末尾斜杠）
  *   LLM_MODEL        必填
  *   LLM_PATH         可选，默认 /chat/completions；MiniMax Anthropic 用 /v1/messages
+ *   LLM_WEB_SEARCH_ENABLED  可选，true 时生成方案启用互联网检索（见 .env.example）
  *
  * Provider 速查：
  *   ┌───────────┬────────────────────────────────────────────┬──────────────────────────┬──────────────────────────────┐
@@ -21,39 +22,29 @@
  *   └───────────┴────────────────────────────────────────────┴──────────────────────────┴──────────────────────────────┘
  */
 
-const LLM_FETCH_TIMEOUT_MS = 15 * 60 * 1000;
+import {
+  getDeepSeekThinkingConfig,
+  getLLMConfig,
+  isAnthropicProtocol,
+  isDeepSeekModel,
+  isMiniMaxModel,
+  LLM_FETCH_TIMEOUT_MS,
+  type LLMConfig,
+} from "@/lib/llm-config";
 
-interface LLMConfig {
-  apiKey: string;
-  baseURL: string;
-  model: string;
-  path: string;
+/** DeepSeek Anthropic 端点的思考开关：thinking + output_config.effort（仅 high/max） */
+function applyDeepSeekAnthropicThinking(
+  body: Record<string, any>,
+  cfg: LLMConfig,
+  thinkingCfg: { enabled: boolean; effort: "low" | "medium" | "high" | "max" },
+) {
+  if (!isDeepSeekModel(cfg) || !thinkingCfg.enabled) return;
+  body.thinking = { type: "enabled" };
+  body.output_config = { effort: thinkingCfg.effort === "max" ? "max" : "high" };
 }
 
-function getConfig(): LLMConfig {
-  const apiKey = process.env.LLM_API_KEY;
-  const baseURL = process.env.LLM_BASE_URL;
-  const model = process.env.LLM_MODEL;
-  if (!apiKey || !baseURL || !model) {
-    throw new Error("LLM_API_KEY / LLM_BASE_URL / LLM_MODEL 必须配置");
-  }
-  return {
-    apiKey,
-    baseURL: baseURL.replace(/\/+$/, ""),
-    model,
-    path: process.env.LLM_PATH || "/chat/completions",
-  };
-}
-
-/** DeepSeek 思考模式配置（从环境变量读取） */
-function getDeepSeekThinkingConfig(): { enabled: boolean; effort: "low" | "medium" | "high" | "max" } {
-  const enabled = process.env.LLM_THINKING_ENABLED === "true";
-  const effort = (process.env.LLM_REASONING_EFFORT as any) || "high";
-  if (!["low", "medium", "high", "max"].includes(effort)) {
-    return { enabled, effort: "high" };
-  }
-  return { enabled, effort };
-}
+export type { LLMConfig };
+export { LLM_FETCH_TIMEOUT_MS };
 
 export interface ChatMessageParam {
   role: "system" | "user" | "assistant";
@@ -68,14 +59,19 @@ interface ChatOptions {
   thinking?: boolean;
 }
 
-/** 一次性返回完整文本。 */
+function getConfig(): LLMConfig {
+  return getLLMConfig();
+}
+
+/** 一次性返回完整文本。传入 cfgOverride 可指定 Provider（用于主备切换）。 */
 export async function chatCompletion(
   messages: ChatMessageParam[],
   opts: ChatOptions = {},
+  cfgOverride?: LLMConfig,
 ): Promise<string> {
-  const cfg = getConfig();
+  const cfg = cfgOverride ?? getConfig();
   const thinkingCfg = getDeepSeekThinkingConfig();
-  const isMiniMaxAnthropic = cfg.path === "/v1/messages" || (cfg.model.toLowerCase().includes("minimax") && cfg.path.includes("anthropic"));
+  const isMiniMaxAnthropic = isAnthropicProtocol(cfg);
   const isDeepSeek = cfg.model.toLowerCase().includes("deepseek") && cfg.path === "/chat/completions";
   const isDeepSeekThinking = isDeepSeek && thinkingCfg.enabled;
 
@@ -91,8 +87,10 @@ export async function chatCompletion(
       })),
       max_tokens: opts.max_tokens ?? 32000,
     };
+    // DeepSeek 走 Anthropic 端点时按需开启思考
+    applyDeepSeekAnthropicThinking(body, cfg, thinkingCfg);
   } else {
-    const isMiniMax = cfg.path === "/text/chatcompletion_v2" || cfg.model.toLowerCase().includes("minimax");
+    const isMiniMax = cfg.path === "/text/chatcompletion_v2" || isMiniMaxModel(cfg);
     const adaptedMessages = isMiniMax
       ? messages.map((m) => ({ role: m.role, text: m.content }))
       : messages;
@@ -129,7 +127,9 @@ export async function chatCompletion(
 
   const data: any = await res.json();
   if (data?.base_resp && data.base_resp.status_code !== 0) {
-    throw new Error(`LLM 业务错误：${data.base_resp.status_msg}`);
+    throw Object.assign(new Error(`LLM 业务错误：${data.base_resp.status_msg}`), {
+      bizCode: data.base_resp.status_code,
+    });
   }
 
   let content = "";
@@ -148,15 +148,16 @@ export async function chatCompletion(
   return content;
 }
 
-/** 流式输出，每个 delta 触发一次 onDelta。返回完整文本。 */
+/** 流式输出，每个 delta 触发一次 onDelta。返回完整文本。传入 cfgOverride 可指定 Provider。 */
 export async function chatCompletionStream(
   messages: ChatMessageParam[],
   opts: ChatOptions,
   onDelta: (chunk: string) => void,
+  cfgOverride?: LLMConfig,
 ): Promise<string> {
-  const cfg = getConfig();
+  const cfg = cfgOverride ?? getConfig();
   const thinkingCfg = getDeepSeekThinkingConfig();
-  const isMiniMaxAnthropic = cfg.path === "/v1/messages" || (cfg.model.toLowerCase().includes("minimax") && cfg.path.includes("anthropic"));
+  const isMiniMaxAnthropic = isAnthropicProtocol(cfg);
   const isDeepSeek = cfg.model.toLowerCase().includes("deepseek") && cfg.path === "/chat/completions";
   const isDeepSeekThinking = isDeepSeek && thinkingCfg.enabled;
 
@@ -172,8 +173,10 @@ export async function chatCompletionStream(
       max_tokens: opts.max_tokens ?? 32000,
       stream: true,
     };
+    // DeepSeek 走 Anthropic 端点时按需开启思考
+    applyDeepSeekAnthropicThinking(body, cfg, thinkingCfg);
   } else {
-    const isMiniMax = cfg.path === "/text/chatcompletion_v2" || cfg.model.toLowerCase().includes("minimax");
+    const isMiniMax = cfg.path === "/text/chatcompletion_v2" || isMiniMaxModel(cfg);
     const adaptedMessages = isMiniMax
       ? messages.map((m) => ({ role: m.role, text: m.content }))
       : messages;
