@@ -19,56 +19,56 @@ export async function mockGenerateAnalysis(input: GenerateAnalysisInput): Promis
   return buildProject(input);
 }
 
-export async function generateAnalysisWithLLM(input: GenerateAnalysisInput): Promise<Project> {
+export interface JobStatusResult {
+  status: "pending" | "done" | "failed" | "expired";
+  project?: Project;
+  error?: string;
+}
+
+/** 启动后台生成任务，返回 jobId（不等待生成完成）。 */
+export async function startGenerateJob(input: GenerateAnalysisInput): Promise<string> {
   const res = await fetch("/api/generate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(input),
   });
-
-  // 过载等快路径仍返回普通 JSON 错误（非 200）
-  if (!res.ok || !res.body) {
+  if (!res.ok) {
     const err = await res.json().catch(() => ({}));
     throw new Error(err?.error || `HTTP ${res.status}`);
   }
+  const data = await res.json().catch(() => ({}));
+  if (!data?.jobId) throw new Error("启动生成任务失败");
+  return data.jobId as string;
+}
 
-  // 流式 SSE：生成期间持续收到 start/ping 心跳，最终收到 result 或 error 事件。
-  // 这样连接全程有数据流动，规避网关/代理对长请求的超时（"Failed to fetch"）。
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let project: Project | null = null;
-  let streamError: string | null = null;
-
-  outer: while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const payload = trimmed.slice(5).trim();
-      if (!payload || payload === "[DONE]") {
-        if (payload === "[DONE]") break outer;
-        continue;
-      }
-      try {
-        const evt: any = JSON.parse(payload);
-        if (evt.type === "result") project = evt.project as Project;
-        else if (evt.type === "error") streamError = evt.error || "生成失败";
-        // type === "start" / "ping" 为心跳，忽略
-      } catch {
-        // 忽略无法解析的行
-      }
-    }
+/** 查询后台生成任务状态。 */
+export async function fetchGenerateJobStatus(jobId: string): Promise<JobStatusResult> {
+  const res = await fetch(`/api/generate/status?id=${encodeURIComponent(jobId)}`);
+  if (res.status === 404) return { status: "expired" };
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error || `HTTP ${res.status}`);
   }
+  return (await res.json()) as JobStatusResult;
+}
 
-  if (streamError) throw new Error(streamError);
-  if (!project) throw new Error("生成失败：未收到完整方案");
-  return project;
+/**
+ * 启动任务并轮询直到完成（标签页内等待，用于模板库等无需刷新恢复的场景）。
+ * 「刷新不中断」由 generation-provider 基于持久化的 jobId 续轮实现。
+ */
+export async function generateAnalysisWithLLM(input: GenerateAnalysisInput): Promise<Project> {
+  const jobId = await startGenerateJob(input);
+  const start = Date.now();
+  const TIMEOUT_MS = 5 * 60 * 1000;
+  const INTERVAL_MS = 3000;
+  while (true) {
+    const s = await fetchGenerateJobStatus(jobId);
+    if (s.status === "done" && s.project) return s.project;
+    if (s.status === "failed") throw new Error(s.error || "生成失败");
+    if (s.status === "expired") throw new Error("生成任务已过期");
+    if (Date.now() - start > TIMEOUT_MS) throw new Error("生成超时，请重试");
+    await delay(INTERVAL_MS);
+  }
 }
 
 /* -------------------------- 模块对话 -------------------------- */

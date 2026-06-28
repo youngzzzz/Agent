@@ -43,6 +43,8 @@ export interface Project {
   updatedAt: string;
   status: "draft" | "generating" | "generated" | "failed";
   error?: string;
+  /** 后台生成任务 id：用于刷新页面后凭此续轮，恢复生成进度 */
+  jobId?: string;
   layers: Layer[];
 }
 

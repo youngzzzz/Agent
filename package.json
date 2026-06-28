@@ -12,6 +12,8 @@
     "test:web-search": "node scripts/test-minimax-web-search.mjs"
   },
   "dependencies": {
+    "@upstash/redis": "^1.38.0",
+    "@vercel/functions": "^3.7.4",
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "idb-keyval": "^6.2.5",

@@ -17,7 +17,10 @@ import { gatherSearchContextForGenerate } from "@/lib/web-search/gather-context"
 import { dumpGenerateDebug } from "@/lib/debug-dump";
 import { runLlmWithFallback } from "@/lib/llm-fallback";
 import { acquireLlmSlot, getClientIp, OverloadedError } from "@/lib/concurrency";
+import { createJob, setJobError, setJobResult } from "@/lib/job-store";
 import { GenerateAnalysisInput } from "@/lib/types";
+import { uid } from "@/lib/utils";
+import { waitUntil } from "@vercel/functions";
 
 // 强制 Node 运行时（需要 process.env / 服务端 fetch），并放宽函数最大执行时长。
 // 深度方案会等待完整 LLM 响应，默认超时会被中断导致前端 "Failed to fetch"。
@@ -239,81 +242,55 @@ async function runGeneration(input: GenerateAnalysisInput): Promise<any> {
   return project;
 }
 
-// 心跳间隔：定期推送 ping 事件，避免长生成期间连接被网关/代理判定空闲而中断
-const HEARTBEAT_MS = 10_000;
-
+/**
+ * 后台任务模式：POST 立即返回 jobId，生成在 waitUntil 后台继续并把结果落库。
+ * 前端凭 jobId 轮询 /api/generate/status；刷新页面后用持久化的 jobId 续轮即可恢复，
+ * 不会因为页面刷新而中断生成。
+ */
 export async function POST(req: NextRequest) {
-  const start = Date.now();
-  let release: (() => void) | null = null;
+  let input: GenerateAnalysisInput;
   try {
-    const input: GenerateAnalysisInput = await req.json();
-    // 并发闸：申请执行槽位，拥塞时抛 OverloadedError → 返回 503/429（快路径，仍走普通 JSON）
-    release = await acquireLlmSlot(getClientIp(req));
-
-    const encoder = new TextEncoder();
-
-    const stream = new ReadableStream<Uint8Array>({
-      async start(controller) {
-        let closed = false;
-        const send = (obj: unknown) => {
-          if (closed) return;
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify(obj)}\n\n`));
-        };
-
-        // 立即吐首字节：让网关/CDN 马上拿到响应头，规避「首字节超时」（如 Cloudflare 524）
-        send({ type: "start" });
-
-        // 周期心跳，保持连接活跃
-        const heartbeat = setInterval(() => send({ type: "ping" }), HEARTBEAT_MS);
-
-        try {
-          const project = await runGeneration(input);
-          console.info(
-            `[generate] success total ${Date.now() - start}ms modules=${project.layers.reduce(
-              (n: number, l: any) => n + l.modules.length,
-              0,
-            )}`,
-          );
-          send({ type: "result", project });
-        } catch (err: any) {
-          console.error(`[generate] error after ${Date.now() - start}ms:`, err);
-          send({ type: "error", error: err?.message || "生成失败" });
-        } finally {
-          clearInterval(heartbeat);
-          if (!closed) {
-            controller.enqueue(encoder.encode("data: [DONE]\n\n"));
-            controller.close();
-            closed = true;
-          }
-          release?.();
-          release = null;
-        }
-      },
-      cancel() {
-        release?.();
-        release = null;
-      },
-    });
-
-    return new Response(stream, {
-      headers: {
-        "Content-Type": "text/event-stream; charset=utf-8",
-        "Cache-Control": "no-cache, no-transform",
-        Connection: "keep-alive",
-        // 关闭 Nginx 等反向代理的响应缓冲，确保心跳实时下发
-        "X-Accel-Buffering": "no",
-      },
-    });
-  } catch (err: any) {
-    release?.();
-    if (err instanceof OverloadedError) {
-      console.warn(`[generate] overloaded: ${err.message}`);
-      return NextResponse.json({ error: err.message }, { status: err.status });
-    }
-    console.error(`[generate] error after ${Date.now() - start}ms:`, err);
-    return NextResponse.json(
-      { error: err?.message || "生成失败" },
-      { status: 500 },
-    );
+    input = await req.json();
+  } catch {
+    return NextResponse.json({ error: "请求体解析失败" }, { status: 400 });
   }
+
+  const ip = getClientIp(req);
+  const jobId = uid("job");
+  await createJob(jobId);
+
+  // 后台执行：并发闸 → 生成 → 落库。过载/失败都写入任务状态，由前端轮询读取。
+  const task = (async () => {
+    const start = Date.now();
+    let release: (() => void) | null = null;
+    try {
+      release = await acquireLlmSlot(ip);
+      const project = await runGeneration(input);
+      await setJobResult(jobId, project);
+      console.info(
+        `[generate] job ${jobId} success total ${Date.now() - start}ms modules=${project.layers.reduce(
+          (n: number, l: any) => n + l.modules.length,
+          0,
+        )}`,
+      );
+    } catch (err: any) {
+      const msg =
+        err instanceof OverloadedError
+          ? err.message
+          : err?.message || "生成失败";
+      console.error(`[generate] job ${jobId} failed after ${Date.now() - start}ms:`, msg);
+      await setJobError(jobId, msg);
+    } finally {
+      release?.();
+    }
+  })();
+
+  // 让 Vercel 在响应返回后继续执行后台任务（本地 dev 无此上下文时忽略，浮动 Promise 仍在常驻进程中跑）
+  try {
+    waitUntil(task);
+  } catch {
+    /* 本地开发环境无 waitUntil 上下文，task 已作为浮动 Promise 启动 */
+  }
+
+  return NextResponse.json({ jobId });
 }
