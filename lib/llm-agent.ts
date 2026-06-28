@@ -2,6 +2,7 @@ import {
   getDeepSeekThinkingConfig,
   getLLMConfig,
   isAnthropicProtocol,
+  isDeepSeekModel,
   isMiniMaxModel,
   isRateLimitError,
   LLM_FETCH_TIMEOUT_MS,
@@ -280,11 +281,12 @@ async function runAnthropicNativeWebSearchAgent(
 ): Promise<{ text: string; searchRounds: number }> {
   const { system, rest } = splitSystem(messages);
   const anthropicMessages = toAnthropicMessages(rest);
+  const thinkingCfg = getDeepSeekThinkingConfig();
   let searchRounds = 0;
   const maxIterations = maxRounds + 3;
 
   for (let i = 0; i < maxIterations; i++) {
-    const data = await llmFetch(cfg, {
+    const body: Record<string, any> = {
       model: cfg.model,
       max_tokens: opts.max_tokens ?? 8000,
       system,
@@ -296,7 +298,13 @@ async function runAnthropicNativeWebSearchAgent(
           max_uses: maxRounds,
         },
       ],
-    });
+    };
+    // DeepSeek V4 原生联网 + 思考可共存：补上 thinking / output_config
+    if (isDeepSeekModel(cfg) && thinkingCfg.enabled) {
+      body.thinking = { type: "enabled" };
+      body.output_config = { effort: thinkingCfg.effort === "max" ? "max" : "high" };
+    }
+    const data = await llmFetch(cfg, body);
 
     const contentBlocks = data.content ?? [];
     const stopReason = data.stop_reason;

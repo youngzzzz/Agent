@@ -26,10 +26,22 @@ import {
   getDeepSeekThinkingConfig,
   getLLMConfig,
   isAnthropicProtocol,
+  isDeepSeekModel,
   isMiniMaxModel,
   LLM_FETCH_TIMEOUT_MS,
   type LLMConfig,
 } from "@/lib/llm-config";
+
+/** DeepSeek Anthropic 端点的思考开关：thinking + output_config.effort（仅 high/max） */
+function applyDeepSeekAnthropicThinking(
+  body: Record<string, any>,
+  cfg: LLMConfig,
+  thinkingCfg: { enabled: boolean; effort: "low" | "medium" | "high" | "max" },
+) {
+  if (!isDeepSeekModel(cfg) || !thinkingCfg.enabled) return;
+  body.thinking = { type: "enabled" };
+  body.output_config = { effort: thinkingCfg.effort === "max" ? "max" : "high" };
+}
 
 export type { LLMConfig };
 export { LLM_FETCH_TIMEOUT_MS };
@@ -75,6 +87,8 @@ export async function chatCompletion(
       })),
       max_tokens: opts.max_tokens ?? 32000,
     };
+    // DeepSeek 走 Anthropic 端点时按需开启思考
+    applyDeepSeekAnthropicThinking(body, cfg, thinkingCfg);
   } else {
     const isMiniMax = cfg.path === "/text/chatcompletion_v2" || isMiniMaxModel(cfg);
     const adaptedMessages = isMiniMax
@@ -159,6 +173,8 @@ export async function chatCompletionStream(
       max_tokens: opts.max_tokens ?? 32000,
       stream: true,
     };
+    // DeepSeek 走 Anthropic 端点时按需开启思考
+    applyDeepSeekAnthropicThinking(body, cfg, thinkingCfg);
   } else {
     const isMiniMax = cfg.path === "/text/chatcompletion_v2" || isMiniMaxModel(cfg);
     const adaptedMessages = isMiniMax
