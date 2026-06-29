@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { ToastProvider } from "@/components/ui/toast";
 import { GenerationProvider } from "@/components/generation-provider";
+import { Analytics } from "@vercel/analytics/next";
 
 export const metadata: Metadata = {
   title: "AI Transformation Canvas",
@@ -15,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ToastProvider>
           <GenerationProvider>{children}</GenerationProvider>
         </ToastProvider>
+        <Analytics />
       </body>
     </html>
   );
