@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { Analytics } from "@vercel/analytics/next";
 import { ToastProvider } from "@/components/ui/toast";
 import { GenerationProvider } from "@/components/generation-provider";
 
@@ -15,6 +16,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <ToastProvider>
           <GenerationProvider>{children}</GenerationProvider>
         </ToastProvider>
+        <Analytics />
       </body>
     </html>
   );
